@@ -15,18 +15,21 @@
 #endif
 
 #include <ArduinoJson.h>
+#include <EEPROM.h>
+
+#define EEPROM_UID_ADDR 0
+#define EEPROM_UID_SIZE 6
 
 // Please use ExpressLRS Configurator Runtime Options to obtain your UID (unique MAC hashed
 // from binding_phrase) Insert the six numbers between the curly brackets below
+
 // For ESP NOW / ELRS Backpack you need to enter the UID resulting from hashing your
 // secret binding phrase. This must be obtained by launching https://expresslrs.github.io/web-flasher/,
 // enter your binding phrase, then make a note of the UID. Enter the 6 numbers between the commas
 // Config Elrs Binding
 // uint8_t UID[6] = {0,0,0,0,0,0}; // this is my UID. You have to change it to your once, should look
-uint8_t UID[6] = {180, 222, 78, 20, 139, 111}; // this is my UID. You have to change it to your once (UID Input: 12345678)
-
-const char *ssid = "Backpack_ELRS_Crsf"; // SSID des Access Points
-const char *password = "12345678";       // Passwort des Access Points
+uint8_t UID[6] = {0, 0, 0, 0, 0, 0}; // this is my UID. You have to change it to your once (UID Input: 12345678)
+// To calculate this: MD5("-DMY_BINDING_PHRASE=\""+bindingphrase+"\"")[0:6]
 
 // Callback when data is received
 #ifdef ESP32
@@ -53,11 +56,35 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
   serializeJson(doc, Serial);
 }
 
+void loadUIDFromEEPROM()
+{
+  EEPROM.begin(EEPROM_UID_SIZE);
+  for (int i = 0; i < EEPROM_UID_SIZE; ++i)
+  {
+    UID[i] = EEPROM.read(EEPROM_UID_ADDR + i);
+  }
+  EEPROM.end();
+}
+
+void saveUIDToEEPROM()
+{
+  EEPROM.begin(EEPROM_UID_SIZE);
+  for (int i = 0; i < EEPROM_UID_SIZE; ++i)
+  {
+    EEPROM.write(EEPROM_UID_ADDR + i, UID[i]);
+  }
+  EEPROM.commit();
+  EEPROM.end();
+}
+
 void setup()
 {
   // Init Serial Monitor
   Serial.begin(115200);
   Serial.println("Start");
+
+  loadUIDFromEEPROM();
+
   // MAC address can only be set with unicast, so first byte must be even, not odd --> important for BACKPACK
   UID[0] = UID[0] & ~0x01;
   WiFi.mode(WIFI_STA);
@@ -70,8 +97,6 @@ void setup()
 #else
   wifi_set_macaddr(STATION_IF, UID); //--> important for BACKPACK
 #endif
-  // Start the device in Access Point mode with the specified SSID and password
-  // WiFi.softAP(ssid, password);
 // Init ESP-NOW
 #ifdef ESP32
   if (esp_now_init() != ESP_OK)
@@ -96,6 +121,49 @@ void setup()
 #endif
 }
 
+String inboundData = "";
+
 void loop()
 {
+  while (Serial.available())
+  {
+    // Read incoming data from Serial
+    String input = Serial.readStringUntil('\n');
+    Serial.print("Received from Serial: ");
+    Serial.println(input);
+
+    inboundData += input;
+    if (inboundData.startsWith("{") && inboundData.endsWith("}"))
+    {
+      // Parse the JSON data
+      StaticJsonDocument<256> doc;
+      DeserializationError error = deserializeJson(doc, inboundData);
+      if (error)
+      {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(error.f_str());
+        return;
+      }
+
+      String event = doc["event"];
+      handleEvent(event, doc["data"]);
+    }
+  }
+}
+
+void handleEvent(String event, const JsonDocument &data)
+{
+  if (event == "configuration")
+  {
+    for (size_t i = 0; i < 6 && i < data.size(); ++i)
+    {
+      UID[i] = data[i];
+    }
+    saveUIDToEEPROM();
+  }
+  else
+  {
+    Serial.print("Unknown event: ");
+    Serial.println(event);
+  }
 }
